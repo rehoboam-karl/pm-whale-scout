@@ -1,0 +1,29 @@
+[project]
+name = "pm-whale-scout"
+version = "0.1.0"
+description = "Polymarket whale discovery and scoring via public Leaderboard API"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Fernando Karl Aigner"}
+]
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.28",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+whale-scout = "whale_scout:main"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
