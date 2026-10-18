@@ -45,17 +45,43 @@ python whale_scout.py --scores
 TELEGRAM_BOT_TOKEN="..." TELEGRAM_CHAT_ID="..." python whale_scout.py --telegram
 ```
 
+## Live Output
+
+```
+$ python whale_scout.py --top 10
+📡 Fetching Polymarket Leaderboard API v2...
+  month: 600 | week: 600 | volume: 600
+  424 unique traders found
+🎯 49 qualified whales found
+
+🐋 WHALE SCOUT — Polymarket Leaderboard Analysis
+📅 2026-10-18 16:07 UTC
+=================================================================
+
+📊 Top 10 Whale Candidates:
+ # Name                     Score      30d P&L     7d P&L         Volume
+------------------------------------------------------------------------
+ 1 joseph00677               83.9 $  5,592,482 $4,010,924 $   39,443,463
+ 2 BreakTheBank              75.7 $  5,368,753 $2,957,285 $   52,195,013
+ 3 Diabolical-Prize          50.2 $  2,835,815 $1,959,470 $   53,130,876
+ 4 UpTheBlues                36.3 $  1,583,754 $  162,126 $  138,579,555
+ 5 HomeRunHazard             35.7 $  1,422,467 $  566,679 $  113,041,637
+
+🟢 Add (15):
+  ✅ joseph00677              score: 83.9 | 30d: $5,592,482 | 7d: $4,010,924
+  ✅ BreakTheBank             score: 75.7 | 30d: $5,368,753 | 7d: $2,957,285
+```
+
 ## Scoring Model
 
 Each trader gets a **composite score (0–100)** weighted across 5 dimensions:
 
 | Weight | Dimension | What it measures |
 |--------|-----------|-----------------|
-| 35% | 30d Profit | Recent consistent profitability |
-| 25% | 7d Profit | Short-term momentum |
+| 40% | 30d Profit | Recent consistent profitability |
+| 30% | 7d Profit | Short-term momentum |
 | 20% | Volume | Activity level |
-| 10% | Lifetime Profit | Track record |
-| 10% | Consistency | Present across time windows |
+| 10% | Consistency | Present in both 7d and 30d windows |
 
 **Minimum thresholds to qualify:**
 - 30d profit ≥ $500
@@ -117,7 +143,7 @@ scoring/
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LEADERBOARD_API` | `https://lb-api.polymarket.com` | Polymarket LB API base |
+| `LB_API` | `https://data-api.polymarket.com` | Polymarket Data API v2 base |
 | `TELEGRAM_BOT_TOKEN` | — | Telegram bot token |
 | `TELEGRAM_CHAT_ID` | — | Telegram chat ID |
 | `OUTPUT_DIR` | `./output` | Where to write results |
