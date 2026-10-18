@@ -2,7 +2,7 @@
 """
 Whale Scout — Polymarket Leaderboard-powered whale discovery.
 
-Uses Polymarket's public Leaderboard API to find consistently profitable,
+Uses Polymarket's public Leaderboard API v2 to find consistently profitable,
 high-volume traders. Scores whales across multiple time windows and
 recommends list changes for copy-trading bots.
 
@@ -13,11 +13,11 @@ Usage:
     python whale_scout.py --scores         # Print detailed score breakdown
 
 Environment variables:
-    LEADERBOARD_API      Polymarket LB API base URL
-                         (default: https://lb-api.polymarket.com)
-    TELEGRAM_BOT_TOKEN   Telegram bot token (for --telegram)
-    TELEGRAM_CHAT_ID     Telegram chat ID (for --telegram)
-    OUTPUT_DIR           Where to write results (default: ./output)
+    LB_API              Polymarket LB API v2 base URL
+                        (default: https://data-api.polymarket.com)
+    TELEGRAM_BOT_TOKEN Telegram bot token (for --telegram)
+    TELEGRAM_CHAT_ID   Telegram chat ID (for --telegram)
+    OUTPUT_DIR         Where to write results (default: ./output)
 """
 
 import json
@@ -31,7 +31,7 @@ import requests
 
 # ─── Config from env ────────────────────────────────────────────────────────
 
-LB_API = os.environ.get("LEADERBOARD_API", "https://lb-api.polymarket.com")
+LB_API = os.environ.get("LB_API", "https://data-api.polymarket.com")
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
@@ -43,11 +43,10 @@ HISTORY_FILE = OUTPUT_DIR / "whale_scout_history.jsonl"
 # ─── Scoring weights ─────────────────────────────────────────────────────────
 # Calibrated for Polymarket copy-trading: recent profit dominates
 
-W_PROFIT_30D = 0.35      # Recent profitability matters most
-W_PROFIT_7D  = 0.25      # Very recent momentum
-W_PROFIT_ALL  = 0.10      # Lifetime track record
+W_PROFIT_30D = 0.40      # Recent profitability matters most
+W_PROFIT_7D  = 0.30      # Very recent momentum
 W_VOLUME      = 0.20      # Activity level
-W_CONSISTENCY = 0.10     # Appears in multiple time windows
+W_CONSISTENCY = 0.10     # Appears in both 7d and 30d windows
 
 # ─── Thresholds ─────────────────────────────────────────────────────────────
 MIN_PROFIT_30D = 500      # Must have made >$500 in 30d
@@ -62,25 +61,48 @@ BLACKLIST = {
 }
 
 
-# ─── API ────────────────────────────────────────────────────────────────────
+# ─── API v2 ─────────────────────────────────────────────────────────────────
 
-def fetch_leaderboard(metric: str = "profit", window: str = "all", limit: int = 200):
-    """Fetch leaderboard data from Polymarket public LB API."""
+def _fetch_board(time_period: str, sort_by: str = "PNL",
+                 limit: int = 200) -> tuple[list[dict], str | None]:
+    """
+    Fetch a leaderboard page from Polymarket Data API v2.
+    Returns (entries, next_cursor). Cursor is None when no more pages.
+    """
     try:
         r = requests.get(
-            f"{LB_API}/{metric}",
-            params={"window": window, "limit": limit},
+            f"{LB_API}/v2/leaderboard",
+            params={"time_period": time_period, "sort_by": sort_by, "limit": limit},
             timeout=10,
         )
         if r.status_code != 200:
-            print(f"  ⚠ {metric}/{window}: HTTP {r.status_code}", file=sys.stderr)
-            return []
+            print(f"  ⚠ leaderboard/{time_period}/{sort_by}: HTTP {r.status_code}", file=sys.stderr)
+            return [], None
         data = r.json()
-        return data if isinstance(data, list) else []
+        entries = data.get("data", [])
+        cursor = data.get("pagination", {}).get("next_cursor")
+        return entries, cursor
     except Exception as e:
-        print(f"  ⚠ {metric}/{window}: {e}", file=sys.stderr)
-        return []
+        print(f"  ⚠ leaderboard/{time_period}/{sort_by}: {e}", file=sys.stderr)
+        return [], None
 
+
+def _fetch_all_pages(time_period: str, sort_by: str = "PNL",
+                     limit: int = 200, max_pages: int = 5) -> list[dict]:
+    """Fetch all pages of a leaderboard (capped at max_pages for safety)."""
+    all_entries = []
+    cursor = None
+    for _ in range(max_pages):
+        page, cursor = _fetch_board(time_period, sort_by, limit)
+        all_entries.extend(page)
+        if not cursor:
+            break
+        if len(all_entries) >= 500:
+            break  # Safety cap
+    return all_entries
+
+
+# ─── Normalization helpers ────────────────────────────────────────────────────
 
 def _normalize_address(addr: str) -> str:
     """Normalize address: lowercase, no 0x prefix."""
@@ -98,72 +120,57 @@ def _percentile(val: float, all_vals: list[float]) -> float:
 
 def score_whales() -> list[dict]:
     """
-    Fetch multiple leaderboards and compute composite whale scores.
+    Fetch multiple leaderboard windows from Polymarket API v2
+    and compute composite whale scores.
 
     Returns a sorted list of dicts with keys:
-        address, name, composite_score, profit_*, volume, windows_present, scores
+        address, name, composite_score, profit_*, volume, windows_present
     """
-    print("📡 Fetching Polymarket leaderboards...", file=sys.stderr)
+    print("📡 Fetching Polymarket Leaderboard API v2...", file=sys.stderr)
 
-    # Fetch all windows in parallel-ish (sequential for simplicity)
-    profit_all = fetch_leaderboard("profit", "all", 200)
-    profit_30d = fetch_leaderboard("profit", "30d", 200)
-    profit_7d  = fetch_leaderboard("profit", "7d", 200)
-    profit_1d  = fetch_leaderboard("profit", "1d", 100)
-    volume_all  = fetch_leaderboard("volume", "all", 200)
+    # Fetch month (30d equivalent) and week (7d equivalent) windows
+    board_month = _fetch_all_pages("month", "PNL", limit=200)
+    board_week  = _fetch_all_pages("week",  "PNL", limit=200)
+    board_volume = _fetch_all_pages("month", "VOLUME", limit=200)
 
-    print(f"  profit/all: {len(profit_all)} | profit/30d: {len(profit_30d)} | "
-          f"profit/7d: {len(profit_7d)} | profit/1d: {len(profit_1d)} | "
-          f"volume/all: {len(volume_all)}", file=sys.stderr)
+    print(f"  month: {len(board_month)} | week: {len(board_week)} | "
+          f"volume: {len(board_volume)}", file=sys.stderr)
 
     # Index by normalized address
     def index_by_addr(data: list) -> dict:
         result = {}
         for entry in data:
-            addr = _normalize_address(entry.get("proxyWallet", "") or entry.get("address", ""))
+            addr = _normalize_address(entry.get("user_id", ""))
             if addr:
                 result[addr] = entry
         return result
 
-    idx_all  = index_by_addr(profit_all)
-    idx_30d  = index_by_addr(profit_30d)
-    idx_7d   = index_by_addr(profit_7d)
-    idx_1d   = index_by_addr(profit_1d)
-    idx_vol  = index_by_addr(volume_all)
+    idx_month  = index_by_addr(board_month)
+    idx_week   = index_by_addr(board_week)
+    idx_volume = index_by_addr(board_volume)
 
-    all_addrs = set()
-    for idx in [idx_all, idx_30d, idx_7d, idx_vol]:
-        all_addrs.update(idx.keys())
-
+    # Collect all unique addresses
+    all_addrs = set(idx_month.keys()) | set(idx_week.keys()) | set(idx_volume.keys())
     all_addrs -= {_normalize_address(a) for a in BLACKLIST}
     print(f"  {len(all_addrs)} unique traders found", file=sys.stderr)
 
     # Precompute max values for normalization
-    all_p30d = [float(e.get("amount", 0)) for e in profit_30d if float(e.get("amount", 0)) > 0]
-    all_p7d  = [float(e.get("amount", 0)) for e in profit_7d  if float(e.get("amount", 0)) > 0]
-    all_pall = [float(e.get("amount", 0)) for e in profit_all if float(e.get("amount", 0)) > 0]
-    all_vol  = [float(e.get("amount", 0)) for e in volume_all if float(e.get("amount", 0)) > 0]
+    all_p30d = [float(e.get("pnl", 0)) for e in board_month if float(e.get("pnl", 0)) > 0]
+    all_p7d  = [float(e.get("pnl", 0)) for e in board_week  if float(e.get("pnl", 0)) > 0]
+    all_vol  = [float(e.get("volume", 0)) for e in board_volume if float(e.get("volume", 0)) > 0]
 
     scored = []
     for addr in all_addrs:
-        p_all = idx_all.get(addr, {})
-        p_30d = idx_30d.get(addr, {})
-        p_7d  = idx_7d.get(addr, {})
-        p_1d  = idx_1d.get(addr, {})
-        v_all = idx_vol.get(addr, {})
+        e_month  = idx_month.get(addr, {})
+        e_week   = idx_week.get(addr, {})
+        e_volume = idx_volume.get(addr, {})
 
-        profit_all_val = float(p_all.get("amount", 0))
-        profit_30d_val = float(p_30d.get("amount", 0))
-        profit_7d_val  = float(p_7d.get("amount", 0))
-        profit_1d_val  = float(p_1d.get("amount", 0))
-        volume_val      = float(v_all.get("amount", 0))
+        profit_30d_val = float(e_month.get("pnl", 0)) if e_month else 0.0
+        profit_7d_val  = float(e_week.get("pnl", 0))  if e_week  else 0.0
+        volume_val     = float(e_volume.get("volume", 0)) if e_volume else 0.0
 
-        # Name from any source
-        name = ""
-        for src in [p_30d, p_7d, p_all, v_all, p_1d]:
-            name = src.get("pseudonym", "") or src.get("name", "") or ""
-            if name:
-                break
+        # Name
+        name = (e_month.get("user_name", "") or e_week.get("user_name", "") or "") if e_month or e_week else ""
         if not name:
             name = addr[:12] + "..."
 
@@ -172,24 +179,24 @@ def score_whales() -> list[dict]:
             continue
         if volume_val < MIN_VOLUME:
             continue
-        if profit_7d_val < 0:   # Skip losing traders
+        if profit_7d_val < 0:   # Skip recent losers
             continue
 
         # Normalize each dimension to 0-100
         s_30d = _percentile(profit_30d_val, all_p30d)
         s_7d  = _percentile(profit_7d_val,  all_p7d)
-        s_all = _percentile(profit_all_val, all_pall)
-        s_vol = _percentile(volume_val,      all_vol)
+        s_vol = _percentile(volume_val,     all_vol)
 
-        # Consistency: appears in how many windows?
-        windows_present = sum(1 for x in [p_all, p_30d, p_7d, p_1d] if x)
-        s_consistency = (windows_present / 4) * 100.0
+        # Consistency: appears in both month and week?
+        in_month = bool(e_month)
+        in_week  = bool(e_week)
+        windows_present = int(in_month) + int(in_week)
+        s_consistency = (windows_present / 2) * 100.0
 
         # Weighted composite score
         composite = (
             W_PROFIT_30D * s_30d +
             W_PROFIT_7D  * s_7d  +
-            W_PROFIT_ALL * s_all +
             W_VOLUME     * s_vol +
             W_CONSISTENCY * s_consistency
         )
@@ -198,17 +205,14 @@ def score_whales() -> list[dict]:
             "address":          addr,
             "name":            name,
             "composite_score":  round(composite, 1),
-            "profit_all":      round(profit_all_val, 2),
-            "profit_30d":     round(profit_30d_val, 2),
-            "profit_7d":       round(profit_7d_val, 2),
-            "profit_1d":       round(profit_1d_val, 2),
-            "volume":          round(volume_val, 2),
-            "windows_present": windows_present,
+            "profit_30d":       round(profit_30d_val, 2),
+            "profit_7d":        round(profit_7d_val, 2),
+            "volume":           round(volume_val, 2),
+            "windows_present":  windows_present,
             "scores": {
-                "s_30d":        round(s_30d, 1),
-                "s_7d":         round(s_7d, 1),
-                "s_all":        round(s_all, 1),
-                "s_vol":        round(s_vol, 1),
+                "s_30d":         round(s_30d, 1),
+                "s_7d":          round(s_7d, 1),
+                "s_vol":         round(s_vol, 1),
                 "s_consistency": round(s_consistency, 1),
             },
         })
@@ -225,8 +229,6 @@ def recommend_changes(scored: list[dict], current_whales: list[str]) -> tuple[li
     Returns (to_add, to_remove).
     """
     current_set = {a.lower().replace("0x", "") for a in current_whales}
-
-    # Find underperformers in current list
     current_scores = {w["address"]: w["composite_score"] for w in scored}
 
     to_remove = []
@@ -242,7 +244,6 @@ def recommend_changes(scored: list[dict], current_whales: list[str]) -> tuple[li
                 "reason": "low_score",
             })
 
-    # Find new candidates not in current list
     to_add = []
     for whale in scored:
         if whale["address"] not in current_set and whale["composite_score"] >= MIN_SCORE_TO_ADD:
@@ -317,9 +318,9 @@ def format_telegram(scored: list[dict], to_add: list[dict], to_remove: list[dict
 
 
 def send_telegram(text: str) -> bool:
-    """Send message via Telegram bot. Returns True on success."""
+    """Send a message via Telegram bot. Returns True on success."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("  ⚠ Telegram credentials not set (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)", file=sys.stderr)
+        print("  ⚠ Telegram credentials not set", file=sys.stderr)
         return False
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -338,9 +339,9 @@ def send_telegram(text: str) -> bool:
 
 def main():
     parser = argparse.ArgumentParser(description="Polymarket Whale Scout")
-    parser.add_argument("--json",    action="store_true", help="Output raw JSON")
-    parser.add_argument("--top",     type=int, default=15,  help="Show top N whales (default: 15)")
-    parser.add_argument("--scores",  action="store_true", help="Print detailed score breakdown")
+    parser.add_argument("--json",   action="store_true", help="Output raw JSON")
+    parser.add_argument("--top",   type=int, default=15,  help="Show top N whales (default: 15)")
+    parser.add_argument("--scores", action="store_true", help="Print detailed score breakdown")
     parser.add_argument("--telegram", action="store_true", help="Send report to Telegram")
     parser.add_argument("--current", nargs="*", default=[], help="Current whale addresses to compare against")
     args = parser.parse_args()
@@ -370,8 +371,7 @@ def main():
                 s = w["scores"]
                 print(f"  {w['name']:<24} composite={w['composite_score']:>5.1f}  "
                       f"30d={s['s_30d']:>5.1f} 7d={s['s_7d']:>5.1f} "
-                      f"all={s['s_all']:>5.1f} vol={s['s_vol']:>5.1f} "
-                      f"cons={s['s_consistency']:>5.1f}")
+                      f"vol={s['s_vol']:>5.1f} cons={s['s_consistency']:>5.1f}")
 
     # Save to disk
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -392,7 +392,6 @@ def main():
             "removes": len(to_remove),
         }) + "\n")
 
-    # Telegram
     if args.telegram:
         if send_telegram(format_telegram(scored, to_add, to_remove)):
             print("\n📱 Sent to Telegram", file=sys.stderr)
