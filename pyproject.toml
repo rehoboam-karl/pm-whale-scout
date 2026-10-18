@@ -5,7 +5,7 @@ description = "Polymarket whale discovery and scoring via public Leaderboard API
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
-    {name = "Fernando Karl Aigner"}
+    {name = "Fernando Karl"}
 ]
 requires-python = ">=3.10"
 dependencies = [
