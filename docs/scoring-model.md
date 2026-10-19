@@ -85,11 +85,11 @@ can both score well on their own scale.
 Edit the constants at the top of `whale_scout.py`:
 
 ```python
-W_PROFIT_30D = 0.35    # Increase for faster-moving strategies
-W_PROFIT_7D  = 0.25    # Increase for momentum-focused strategies
-W_PROFIT_ALL  = 0.10   # Decrease for new traders
-W_VOLUME      = 0.20    # Increase for activity-focused strategies
-W_CONSISTENCY = 0.10   # Increase for steady traders
+W_PROFIT_30D = 0.35  # Increase for faster-moving strategies
+W_PROFIT_7D = 0.25  # Increase for momentum-focused strategies
+W_PROFIT_ALL = 0.10  # Decrease for new traders
+W_VOLUME = 0.20  # Increase for activity-focused strategies
+W_CONSISTENCY = 0.10  # Increase for steady traders
 ```
 
 ## Future improvements

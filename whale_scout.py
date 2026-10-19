@@ -20,10 +20,10 @@ Environment variables:
     OUTPUT_DIR         Where to write results (default: ./output)
 """
 
+import argparse
 import json
 import os
 import sys
-import argparse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -43,16 +43,16 @@ HISTORY_FILE = OUTPUT_DIR / "whale_scout_history.jsonl"
 # ─── Scoring weights ─────────────────────────────────────────────────────────
 # Calibrated for Polymarket copy-trading: recent profit dominates
 
-W_PROFIT_30D = 0.40      # Recent profitability matters most
-W_PROFIT_7D  = 0.30      # Very recent momentum
-W_VOLUME      = 0.20      # Activity level
-W_CONSISTENCY = 0.10     # Appears in both 7d and 30d windows
+W_PROFIT_30D = 0.40  # Recent profitability matters most
+W_PROFIT_7D = 0.30  # Very recent momentum
+W_VOLUME = 0.20  # Activity level
+W_CONSISTENCY = 0.10  # Appears in both 7d and 30d windows
 
 # ─── Thresholds ─────────────────────────────────────────────────────────────
-MIN_PROFIT_30D = 500      # Must have made >$500 in 30d
-MIN_VOLUME     = 10_000   # Must have >$10k volume
-MAX_WHALES     = 15       # Target whale count
-MIN_SCORE_TO_ADD = 10      # Minimum composite score to add
+MIN_PROFIT_30D = 500  # Must have made >$500 in 30d
+MIN_VOLUME = 10_000  # Must have >$10k volume
+MAX_WHALES = 15  # Target whale count
+MIN_SCORE_TO_ADD = 10  # Minimum composite score to add
 
 # Addresses to never include (known bots, market makers, your own wallets)
 BLACKLIST = {
@@ -63,8 +63,10 @@ BLACKLIST = {
 
 # ─── API v2 ─────────────────────────────────────────────────────────────────
 
-def _fetch_board(time_period: str, sort_by: str = "PNL",
-                 limit: int = 200) -> tuple[list[dict], str | None]:
+
+def _fetch_board(
+    time_period: str, sort_by: str = "PNL", limit: int = 200
+) -> tuple[list[dict], str | None]:
     """
     Fetch a leaderboard page from Polymarket Data API v2.
     Returns (entries, next_cursor). Cursor is None when no more pages.
@@ -82,13 +84,14 @@ def _fetch_board(time_period: str, sort_by: str = "PNL",
         entries = data.get("data", [])
         cursor = data.get("pagination", {}).get("next_cursor")
         return entries, cursor
-    except Exception as e:
+    except (ValueError, OSError) as e:
         print(f"  ⚠ leaderboard/{time_period}/{sort_by}: {e}", file=sys.stderr)
         return [], None
 
 
-def _fetch_all_pages(time_period: str, sort_by: str = "PNL",
-                     limit: int = 200, max_pages: int = 5) -> list[dict]:
+def _fetch_all_pages(
+    time_period: str, sort_by: str = "PNL", limit: int = 200, max_pages: int = 5
+) -> list[dict]:
     """Fetch all pages of a leaderboard (capped at max_pages for safety)."""
     all_entries = []
     cursor = None
@@ -104,6 +107,7 @@ def _fetch_all_pages(time_period: str, sort_by: str = "PNL",
 
 # ─── Normalization helpers ────────────────────────────────────────────────────
 
+
 def _normalize_address(addr: str) -> str:
     """Normalize address: lowercase, no 0x prefix."""
     return addr.lower().replace("0x", "")
@@ -118,6 +122,7 @@ def _percentile(val: float, all_vals: list[float]) -> float:
 
 # ─── Scoring ─────────────────────────────────────────────────────────────────
 
+
 def score_whales() -> list[dict]:
     """
     Fetch multiple leaderboard windows from Polymarket API v2
@@ -130,11 +135,13 @@ def score_whales() -> list[dict]:
 
     # Fetch month (30d equivalent) and week (7d equivalent) windows
     board_month = _fetch_all_pages("month", "PNL", limit=200)
-    board_week  = _fetch_all_pages("week",  "PNL", limit=200)
+    board_week = _fetch_all_pages("week", "PNL", limit=200)
     board_volume = _fetch_all_pages("month", "VOLUME", limit=200)
 
-    print(f"  month: {len(board_month)} | week: {len(board_week)} | "
-          f"volume: {len(board_volume)}", file=sys.stderr)
+    print(
+        f"  month: {len(board_month)} | week: {len(board_week)} | volume: {len(board_volume)}",
+        file=sys.stderr,
+    )
 
     # Index by normalized address
     def index_by_addr(data: list) -> dict:
@@ -145,8 +152,8 @@ def score_whales() -> list[dict]:
                 result[addr] = entry
         return result
 
-    idx_month  = index_by_addr(board_month)
-    idx_week   = index_by_addr(board_week)
+    idx_month = index_by_addr(board_month)
+    idx_week = index_by_addr(board_week)
     idx_volume = index_by_addr(board_volume)
 
     # Collect all unique addresses
@@ -156,21 +163,25 @@ def score_whales() -> list[dict]:
 
     # Precompute max values for normalization
     all_p30d = [float(e.get("pnl", 0)) for e in board_month if float(e.get("pnl", 0)) > 0]
-    all_p7d  = [float(e.get("pnl", 0)) for e in board_week  if float(e.get("pnl", 0)) > 0]
-    all_vol  = [float(e.get("volume", 0)) for e in board_volume if float(e.get("volume", 0)) > 0]
+    all_p7d = [float(e.get("pnl", 0)) for e in board_week if float(e.get("pnl", 0)) > 0]
+    all_vol = [float(e.get("volume", 0)) for e in board_volume if float(e.get("volume", 0)) > 0]
 
     scored = []
     for addr in all_addrs:
-        e_month  = idx_month.get(addr, {})
-        e_week   = idx_week.get(addr, {})
+        e_month = idx_month.get(addr, {})
+        e_week = idx_week.get(addr, {})
         e_volume = idx_volume.get(addr, {})
 
         profit_30d_val = float(e_month.get("pnl", 0)) if e_month else 0.0
-        profit_7d_val  = float(e_week.get("pnl", 0))  if e_week  else 0.0
-        volume_val     = float(e_volume.get("volume", 0)) if e_volume else 0.0
+        profit_7d_val = float(e_week.get("pnl", 0)) if e_week else 0.0
+        volume_val = float(e_volume.get("volume", 0)) if e_volume else 0.0
 
         # Name
-        name = (e_month.get("user_name", "") or e_week.get("user_name", "") or "") if e_month or e_week else ""
+        name = (
+            (e_month.get("user_name", "") or e_week.get("user_name", "") or "")
+            if e_month or e_week
+            else ""
+        )
         if not name:
             name = addr[:12] + "..."
 
@@ -179,43 +190,45 @@ def score_whales() -> list[dict]:
             continue
         if volume_val < MIN_VOLUME:
             continue
-        if profit_7d_val < 0:   # Skip recent losers
+        if profit_7d_val < 0:  # Skip recent losers
             continue
 
         # Normalize each dimension to 0-100
         s_30d = _percentile(profit_30d_val, all_p30d)
-        s_7d  = _percentile(profit_7d_val,  all_p7d)
-        s_vol = _percentile(volume_val,     all_vol)
+        s_7d = _percentile(profit_7d_val, all_p7d)
+        s_vol = _percentile(volume_val, all_vol)
 
         # Consistency: appears in both month and week?
         in_month = bool(e_month)
-        in_week  = bool(e_week)
+        in_week = bool(e_week)
         windows_present = int(in_month) + int(in_week)
         s_consistency = (windows_present / 2) * 100.0
 
         # Weighted composite score
         composite = (
-            W_PROFIT_30D * s_30d +
-            W_PROFIT_7D  * s_7d  +
-            W_VOLUME     * s_vol +
-            W_CONSISTENCY * s_consistency
+            W_PROFIT_30D * s_30d
+            + W_PROFIT_7D * s_7d
+            + W_VOLUME * s_vol
+            + W_CONSISTENCY * s_consistency
         )
 
-        scored.append({
-            "address":          addr,
-            "name":            name,
-            "composite_score":  round(composite, 1),
-            "profit_30d":       round(profit_30d_val, 2),
-            "profit_7d":        round(profit_7d_val, 2),
-            "volume":           round(volume_val, 2),
-            "windows_present":  windows_present,
-            "scores": {
-                "s_30d":         round(s_30d, 1),
-                "s_7d":          round(s_7d, 1),
-                "s_vol":         round(s_vol, 1),
-                "s_consistency": round(s_consistency, 1),
-            },
-        })
+        scored.append(
+            {
+                "address": addr,
+                "name": name,
+                "composite_score": round(composite, 1),
+                "profit_30d": round(profit_30d_val, 2),
+                "profit_7d": round(profit_7d_val, 2),
+                "volume": round(volume_val, 2),
+                "windows_present": windows_present,
+                "scores": {
+                    "s_30d": round(s_30d, 1),
+                    "s_7d": round(s_7d, 1),
+                    "s_vol": round(s_vol, 1),
+                    "s_consistency": round(s_consistency, 1),
+                },
+            }
+        )
 
     scored.sort(key=lambda x: -x["composite_score"])
     return scored
@@ -223,7 +236,10 @@ def score_whales() -> list[dict]:
 
 # ─── Recommendations ───────────────────────────────────────────────────────────
 
-def recommend_changes(scored: list[dict], current_whales: list[str]) -> tuple[list[dict], list[dict]]:
+
+def recommend_changes(
+    scored: list[dict], current_whales: list[str]
+) -> tuple[list[dict], list[dict]]:
     """
     Recommend adds/removes by comparing scored candidates against current list.
     Returns (to_add, to_remove).
@@ -237,12 +253,14 @@ def recommend_changes(scored: list[dict], current_whales: list[str]) -> tuple[li
         score = current_scores.get(addr_n, 0)
         if score < MIN_SCORE_TO_ADD * 0.5:
             name = next((w["name"] for w in scored if w["address"] == addr_n), addr_n[:12])
-            to_remove.append({
-                "address": addr_n,
-                "name": name,
-                "score": round(score, 1),
-                "reason": "low_score",
-            })
+            to_remove.append(
+                {
+                    "address": addr_n,
+                    "name": name,
+                    "score": round(score, 1),
+                    "reason": "low_score",
+                }
+            )
 
     to_add = []
     for whale in scored:
@@ -255,6 +273,7 @@ def recommend_changes(scored: list[dict], current_whales: list[str]) -> tuple[li
 
 
 # ─── Output formatters ────────────────────────────────────────────────────────
+
 
 def format_report(scored: list[dict], to_add: list[dict], to_remove: list[dict]) -> str:
     """Plain-text report for terminal output."""
@@ -295,11 +314,16 @@ def format_report(scored: list[dict], to_add: list[dict], to_remove: list[dict])
 
 def format_telegram(scored: list[dict], to_add: list[dict], to_remove: list[dict]) -> str:
     """Compact HTML report for Telegram."""
-    lines = ["🐋 <b>Whale Scout</b>", f"📅 {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n"]
+    lines = [
+        "🐋 <b>Whale Scout</b>",
+        f"📅 {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n",
+    ]
 
     lines.append("<b>Top 10:</b>")
     for i, w in enumerate(scored[:10], 1):
-        lines.append(f"{i}. {w['name']}: {w['composite_score']:.0f}pts | ${w['profit_30d']:,.0f}/30d")
+        lines.append(
+            f"{i}. {w['name']}: {w['composite_score']:.0f}pts | ${w['profit_30d']:,.0f}/30d"
+        )
 
     if to_remove:
         lines.append(f"\n🔴 <b>Remove ({len(to_remove)}):</b>")
@@ -309,7 +333,9 @@ def format_telegram(scored: list[dict], to_add: list[dict], to_remove: list[dict
     if to_add:
         lines.append(f"\n🟢 <b>Add ({len(to_add)}):</b>")
         for w in to_add[:5]:
-            lines.append(f"  ✅ {w['name']} ({w['composite_score']:.0f}pts, ${w['profit_30d']:,.0f}/30d)")
+            lines.append(
+                f"  ✅ {w['name']} ({w['composite_score']:.0f}pts, ${w['profit_30d']:,.0f}/30d)"
+            )
 
     if not to_add and not to_remove:
         lines.append("\n✅ Whale list is optimal.")
@@ -324,26 +350,33 @@ def send_telegram(text: str) -> bool:
         return False
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        requests.post(url, json={
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": text,
-            "parse_mode": "HTML",
-        }, timeout=10)
+        requests.post(
+            url,
+            json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": text,
+                "parse_mode": "HTML",
+            },
+            timeout=10,
+        )
         return True
-    except Exception as e:
+    except (ValueError, OSError) as e:
         print(f"  ⚠ Telegram send failed: {e}", file=sys.stderr)
         return False
 
 
 # ─── Main ───────────────────────────────────────────────────────────────────
 
+
 def main():
     parser = argparse.ArgumentParser(description="Polymarket Whale Scout")
-    parser.add_argument("--json",   action="store_true", help="Output raw JSON")
-    parser.add_argument("--top",   type=int, default=15,  help="Show top N whales (default: 15)")
+    parser.add_argument("--json", action="store_true", help="Output raw JSON")
+    parser.add_argument("--top", type=int, default=15, help="Show top N whales (default: 15)")
     parser.add_argument("--scores", action="store_true", help="Print detailed score breakdown")
     parser.add_argument("--telegram", action="store_true", help="Send report to Telegram")
-    parser.add_argument("--current", nargs="*", default=[], help="Current whale addresses to compare against")
+    parser.add_argument(
+        "--current", nargs="*", default=[], help="Current whale addresses to compare against"
+    )
     args = parser.parse_args()
 
     scored = score_whales()
@@ -354,24 +387,29 @@ def main():
     if args.json:
         output = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "whales": scored[:args.top],
+            "whales": scored[: args.top],
             "recommendations": {
-                "add":    [{"address": w["address"], "name": w["name"], "score": w["composite_score"]} for w in to_add],
+                "add": [
+                    {"address": w["address"], "name": w["name"], "score": w["composite_score"]}
+                    for w in to_add
+                ],
                 "remove": to_remove,
             },
         }
         print(json.dumps(output, indent=2))
     else:
-        report = format_report(scored[:args.top], to_add, to_remove)
+        report = format_report(scored[: args.top], to_add, to_remove)
         print(report)
 
         if args.scores:
             print("\n📈 Score Breakdown:")
-            for w in scored[:args.top]:
+            for w in scored[: args.top]:
                 s = w["scores"]
-                print(f"  {w['name']:<24} composite={w['composite_score']:>5.1f}  "
-                      f"30d={s['s_30d']:>5.1f} 7d={s['s_7d']:>5.1f} "
-                      f"vol={s['s_vol']:>5.1f} cons={s['s_consistency']:>5.1f}")
+                print(
+                    f"  {w['name']:<24} composite={w['composite_score']:>5.1f}  "
+                    f"30d={s['s_30d']:>5.1f} 7d={s['s_7d']:>5.1f} "
+                    f"vol={s['s_vol']:>5.1f} cons={s['s_consistency']:>5.1f}"
+                )
 
     # Save to disk
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -379,22 +417,26 @@ def main():
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "whales": scored[:30],
         "recommendations": {
-            "add":    [{"address": w["address"], "name": w["name"]} for w in to_add],
+            "add": [{"address": w["address"], "name": w["name"]} for w in to_add],
             "remove": [{"address": w["address"], "name": w["name"]} for w in to_remove],
         },
     }
     OUTPUT_FILE.write_text(json.dumps(output, indent=2))
     with HISTORY_FILE.open("a") as f:
-        f.write(json.dumps({
-            "timestamp": output["timestamp"],
-            "total_scored": len(scored),
-            "adds": len(to_add),
-            "removes": len(to_remove),
-        }) + "\n")
+        f.write(
+            json.dumps(
+                {
+                    "timestamp": output["timestamp"],
+                    "total_scored": len(scored),
+                    "adds": len(to_add),
+                    "removes": len(to_remove),
+                }
+            )
+            + "\n"
+        )
 
-    if args.telegram:
-        if send_telegram(format_telegram(scored, to_add, to_remove)):
-            print("\n📱 Sent to Telegram", file=sys.stderr)
+    if args.telegram and send_telegram(format_telegram(scored, to_add, to_remove)):
+        print("\n📱 Sent to Telegram", file=sys.stderr)
 
     print(f"\n💾 Results: {OUTPUT_FILE}", file=sys.stderr)
 

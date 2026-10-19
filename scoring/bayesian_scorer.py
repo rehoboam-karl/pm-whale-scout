@@ -10,9 +10,8 @@ Weights calibrated for Polymarket copy-trade:
   whale: 0.50 | time: 0.30 | liquidity: 0.20
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
 
 
 class Action(str, Enum):
@@ -39,10 +38,10 @@ class PositionContext:
     current_price: float
     whale_current_shares: float
     whale_entry_shares: float
-    hours_remaining: Optional[float]  # None if no end date
+    hours_remaining: float | None  # None if no end date
     high_water_mark: float
     trailing_stop_pct: float = 15.0  # current trailing %
-    original_tp_price: Optional[float] = None
+    original_tp_price: float | None = None
 
 
 @dataclass
@@ -50,7 +49,7 @@ class ScorerReason:
     whale_conviction_score: float
     time_decay_pressure: float
     liquidity_risk_score: float
-    hours_remaining: Optional[float]
+    hours_remaining: float | None
     whale_sold_pct: float
     current_gain_pct: float
 
@@ -64,7 +63,7 @@ class ScorerOutput:
     new_stop_loss_price: float
     new_take_profit_price: float
     reason: ScorerReason
-    hard_rule_triggered: Optional[HardRule] = None
+    hard_rule_triggered: HardRule | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -78,15 +77,20 @@ class ScorerOutput:
                 "whale_conviction_score": round(self.reason.whale_conviction_score, 4),
                 "time_decay_pressure": round(self.reason.time_decay_pressure, 4),
                 "liquidity_risk_score": round(self.reason.liquidity_risk_score, 4),
-                "hours_remaining": round(self.reason.hours_remaining, 1) if self.reason.hours_remaining is not None else None,
+                "hours_remaining": round(self.reason.hours_remaining, 1)
+                if self.reason.hours_remaining is not None
+                else None,
                 "whale_sold_pct": round(self.reason.whale_sold_pct, 4),
                 "current_gain_pct": round(self.reason.current_gain_pct, 4),
             },
-            "hard_rule_triggered": self.hard_rule_triggered.value if self.hard_rule_triggered else None,
+            "hard_rule_triggered": self.hard_rule_triggered.value
+            if self.hard_rule_triggered
+            else None,
         }
 
 
 # ─── Scoring Functions ───────────────────────────────────────────────────────
+
 
 def whale_conviction_score(whale_sold_pct: float) -> float:
     """How much the whale still believes (1.0 = max conviction)."""
@@ -102,7 +106,7 @@ def whale_conviction_score(whale_sold_pct: float) -> float:
         return 0.05
 
 
-def time_decay_pressure(hours_remaining: Optional[float]) -> float:
+def time_decay_pressure(hours_remaining: float | None) -> float:
     """Urgency of exit based on time to resolution (0.0 = no pressure)."""
     if hours_remaining is None:
         return 0.0  # No end date known, no pressure
@@ -144,14 +148,14 @@ def dynamic_tp_multiplier(current_gain_pct: float) -> float:
         return 0.80  # already very profitable, protect
 
 
-def check_spike_profit(ctx: PositionContext, current_gain_pct: float) -> Optional[ScorerOutput]:
+def check_spike_profit(ctx: PositionContext, current_gain_pct: float) -> ScorerOutput | None:
     """Check for spike profit - runs BEFORE Bayesian scoring.
-    
+
     Spike profit rules:
     - If gain > 80%: SELL_ALL (spike before event, realize everything)
     - If gain > 50%: PARTIAL_SELL_50 + move SL to +20%
     - If gain > 30%: TIGHTEN_TRAILING to 8%
-    
+
     This catches liquidity spikes where a single large order moves the price
     dramatically before the event, making the position show unreal gains that
     will likely disappear when liquidity normalizes.
@@ -164,7 +168,7 @@ def check_spike_profit(ctx: PositionContext, current_gain_pct: float) -> Optiona
         whale_sold_pct=0.0,
         current_gain_pct=current_gain_pct,
     )
-    
+
     if current_gain_pct > 0.80:
         # Spike of 80%+ before event - impossible fundamentals, sell everything
         return ScorerOutput(
@@ -177,7 +181,7 @@ def check_spike_profit(ctx: PositionContext, current_gain_pct: float) -> Optiona
             reason=reason,
             hard_rule_triggered=HardRule.SPIKE_PROFIT_80,
         )
-    
+
     if current_gain_pct > 0.50:
         # Spike of 50-80% - sell 50%, set hard stop at breakeven + 20%
         return ScorerOutput(
@@ -190,7 +194,7 @@ def check_spike_profit(ctx: PositionContext, current_gain_pct: float) -> Optiona
             reason=reason,
             hard_rule_triggered=HardRule.SPIKE_PROFIT_50,
         )
-    
+
     if current_gain_pct > 0.30:
         # Spike of 30-50% - tighten trailing to 8%
         return ScorerOutput(
@@ -203,7 +207,7 @@ def check_spike_profit(ctx: PositionContext, current_gain_pct: float) -> Optiona
             reason=reason,
             hard_rule_triggered=HardRule.SPIKE_PROFIT_30,
         )
-    
+
     return None  # No spike, continue to Bayesian scoring
 
 
@@ -229,7 +233,9 @@ def score_position(ctx: PositionContext) -> ScorerOutput:
     # Whale conviction
     whale_sold_pct = 0.0
     if ctx.whale_entry_shares > 0:
-        whale_sold_pct = max(0, (ctx.whale_entry_shares - ctx.whale_current_shares) / ctx.whale_entry_shares)
+        whale_sold_pct = max(
+            0, (ctx.whale_entry_shares - ctx.whale_current_shares) / ctx.whale_entry_shares
+        )
     wcs = whale_conviction_score(whale_sold_pct)
 
     # Time decay
@@ -253,24 +259,34 @@ def score_position(ctx: PositionContext) -> ScorerOutput:
     # This is MORE dangerous than either factor alone
     if current_gain_pct < -0.25 and whale_sold_pct > 0.20:
         return ScorerOutput(
-            action=Action.SELL_ALL, p_exit=1.0, sell_percentage=100,
-            new_trailing_stop_pct=0, new_stop_loss_price=cur,
-            new_take_profit_price=cur, reason=reason,
+            action=Action.SELL_ALL,
+            p_exit=1.0,
+            sell_percentage=100,
+            new_trailing_stop_pct=0,
+            new_stop_loss_price=cur,
+            new_take_profit_price=cur,
+            reason=reason,
             hard_rule_triggered=HardRule.WHALE_EXIT,
         )
 
     # Catastrophic loss: hard stop (check FIRST — more severe)
     if current_gain_pct <= -0.35:
         return ScorerOutput(
-            action=Action.SELL_ALL, p_exit=1.0, sell_percentage=100,
-            new_trailing_stop_pct=0, new_stop_loss_price=cur,
-            new_take_profit_price=cur, reason=reason,
+            action=Action.SELL_ALL,
+            p_exit=1.0,
+            sell_percentage=100,
+            new_trailing_stop_pct=0,
+            new_stop_loss_price=cur,
+            new_take_profit_price=cur,
+            reason=reason,
         )
 
     # Significant loss: tighten trailing to protect remaining capital
     if current_gain_pct <= -0.30:
         return ScorerOutput(
-            action=Action.TIGHTEN_TRAILING, p_exit=0.7, sell_percentage=0,
+            action=Action.TIGHTEN_TRAILING,
+            p_exit=0.7,
+            sell_percentage=0,
             new_trailing_stop_pct=5.0,  # very tight trailing
             new_stop_loss_price=cur * 0.95,  # hard SL 5% below current
             new_take_profit_price=entry,  # TP at breakeven
@@ -279,25 +295,37 @@ def score_position(ctx: PositionContext) -> ScorerOutput:
 
     if whale_sold_pct > 0.50:
         return ScorerOutput(
-            action=Action.SELL_ALL, p_exit=1.0, sell_percentage=100,
-            new_trailing_stop_pct=0, new_stop_loss_price=cur,
-            new_take_profit_price=cur, reason=reason,
+            action=Action.SELL_ALL,
+            p_exit=1.0,
+            sell_percentage=100,
+            new_trailing_stop_pct=0,
+            new_stop_loss_price=cur,
+            new_take_profit_price=cur,
+            reason=reason,
             hard_rule_triggered=HardRule.WHALE_EXIT,
         )
 
     if ctx.hours_remaining is not None and ctx.hours_remaining < 6 and cur > entry:
         return ScorerOutput(
-            action=Action.SELL_ALL, p_exit=1.0, sell_percentage=100,
-            new_trailing_stop_pct=0, new_stop_loss_price=cur,
-            new_take_profit_price=cur, reason=reason,
+            action=Action.SELL_ALL,
+            p_exit=1.0,
+            sell_percentage=100,
+            new_trailing_stop_pct=0,
+            new_stop_loss_price=cur,
+            new_take_profit_price=cur,
+            reason=reason,
             hard_rule_triggered=HardRule.TIME_CRITICAL,
         )
 
     if cur > 0.91 or cur < 0.09:
         return ScorerOutput(
-            action=Action.SELL_ALL, p_exit=1.0, sell_percentage=100,
-            new_trailing_stop_pct=0, new_stop_loss_price=cur,
-            new_take_profit_price=cur, reason=reason,
+            action=Action.SELL_ALL,
+            p_exit=1.0,
+            sell_percentage=100,
+            new_trailing_stop_pct=0,
+            new_stop_loss_price=cur,
+            new_take_profit_price=cur,
+            reason=reason,
             hard_rule_triggered=HardRule.LIQUIDITY_EXTREME,
         )
 
@@ -306,9 +334,13 @@ def score_position(ctx: PositionContext) -> ScorerOutput:
         trail_price = ctx.high_water_mark * (1 - ctx.trailing_stop_pct / 100)
         if cur < trail_price and current_gain_pct > 0:
             return ScorerOutput(
-                action=Action.SELL_ALL, p_exit=1.0, sell_percentage=100,
-                new_trailing_stop_pct=0, new_stop_loss_price=cur,
-                new_take_profit_price=cur, reason=reason,
+                action=Action.SELL_ALL,
+                p_exit=1.0,
+                sell_percentage=100,
+                new_trailing_stop_pct=0,
+                new_stop_loss_price=cur,
+                new_take_profit_price=cur,
+                reason=reason,
                 hard_rule_triggered=HardRule.TRAILING_TRIGGERED,
             )
 
@@ -324,7 +356,9 @@ def score_position(ctx: PositionContext) -> ScorerOutput:
     # ── Action mapping ──
     if p_exit < 0.20:
         return ScorerOutput(
-            action=Action.HOLD, p_exit=p_exit, sell_percentage=0,
+            action=Action.HOLD,
+            p_exit=p_exit,
+            sell_percentage=0,
             new_trailing_stop_pct=ctx.trailing_stop_pct,
             new_stop_loss_price=entry * (1 - 0.40),  # -40% SL
             new_take_profit_price=adjusted_tp,
@@ -332,7 +366,9 @@ def score_position(ctx: PositionContext) -> ScorerOutput:
         )
     elif p_exit < 0.40:
         return ScorerOutput(
-            action=Action.TIGHTEN_TRAILING, p_exit=p_exit, sell_percentage=0,
+            action=Action.TIGHTEN_TRAILING,
+            p_exit=p_exit,
+            sell_percentage=0,
             new_trailing_stop_pct=8.0,  # tighten from 15% to 8%
             new_stop_loss_price=entry * (1 - 0.40),
             new_take_profit_price=adjusted_tp,
@@ -340,7 +376,9 @@ def score_position(ctx: PositionContext) -> ScorerOutput:
         )
     elif p_exit < 0.60:
         return ScorerOutput(
-            action=Action.PARTIAL_SELL_25, p_exit=p_exit, sell_percentage=25,
+            action=Action.PARTIAL_SELL_25,
+            p_exit=p_exit,
+            sell_percentage=25,
             new_trailing_stop_pct=8.0,
             new_stop_loss_price=entry,  # breakeven
             new_take_profit_price=adjusted_tp,
@@ -348,7 +386,9 @@ def score_position(ctx: PositionContext) -> ScorerOutput:
         )
     elif p_exit < 0.80:
         return ScorerOutput(
-            action=Action.PARTIAL_SELL_50, p_exit=p_exit, sell_percentage=50,
+            action=Action.PARTIAL_SELL_50,
+            p_exit=p_exit,
+            sell_percentage=50,
             new_trailing_stop_pct=5.0,
             new_stop_loss_price=entry * 1.05,  # entry + 5%
             new_take_profit_price=adjusted_tp,
@@ -356,7 +396,9 @@ def score_position(ctx: PositionContext) -> ScorerOutput:
         )
     else:
         return ScorerOutput(
-            action=Action.SELL_ALL, p_exit=p_exit, sell_percentage=100,
+            action=Action.SELL_ALL,
+            p_exit=p_exit,
+            sell_percentage=100,
             new_trailing_stop_pct=0,
             new_stop_loss_price=cur,
             new_take_profit_price=cur,

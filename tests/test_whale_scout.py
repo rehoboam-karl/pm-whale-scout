@@ -1,6 +1,6 @@
 """Tests for pm-whale-scout."""
 
-from whale_scout import score_whales, recommend_changes, _percentile
+from whale_scout import _percentile, recommend_changes
 
 
 class TestPercentile:
@@ -24,7 +24,7 @@ class TestRecommendChanges:
     def test_empty_current(self):
         scored = [
             {"address": "aaa", "name": "Alice", "composite_score": 50.0},
-            {"address": "bbb", "name": "Bob",   "composite_score": 30.0},
+            {"address": "bbb", "name": "Bob", "composite_score": 30.0},
         ]
         to_add, to_remove = recommend_changes(scored, [])
         assert len(to_add) == 2
@@ -33,9 +33,9 @@ class TestRecommendChanges:
     def test_removes_low_score(self):
         scored = [
             {"address": "aaa", "name": "Alice", "composite_score": 50.0},
-            {"address": "bbb", "name": "Bob",   "composite_score":  3.0},
+            {"address": "bbb", "name": "Bob", "composite_score": 3.0},
         ]
-        to_add, to_remove = recommend_changes(scored, ["aaa", "bbb"])
+        _to_add, to_remove = recommend_changes(scored, ["aaa", "bbb"])
         assert len(to_remove) == 1
         assert to_remove[0]["address"] == "bbb"
 
@@ -43,5 +43,5 @@ class TestRecommendChanges:
         scored = [
             {"address": "aaa", "name": "Alice", "composite_score": 50.0},
         ]
-        to_add, to_remove = recommend_changes(scored, ["aaa"])
+        to_add, _to_remove = recommend_changes(scored, ["aaa"])
         assert len(to_add) == 0

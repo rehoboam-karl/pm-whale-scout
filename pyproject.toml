@@ -1,3 +1,11 @@
+[tool.setuptools]
+py-modules = ["whale_scout"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["whale_scout", "scoring"]
+exclude = ["output", "tests", "docs"]
+
 [project]
 name = "pm-whale-scout"
 version = "0.1.0"
